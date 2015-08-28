@@ -1,0 +1,339 @@
+#!/usr/bin/env python
+"""
+TrafficCop - iptables firewall rule generator
+
+author: Chris Dorros (cdorros)
+
+Copyright (c) 2015, OpenDNS
+See LICENSE file for details
+"""
+
+import re
+from pprint import pprint
+from collections import Counter
+import socket
+import time
+import sys
+
+import prettytable
+from lib.iptables import Iptables
+import click
+
+
+class NetfilterLog:
+    # init by passing an unparsed log line
+    def __init__(self, logline):
+        self.parse_netfilter_log(logline)
+
+    def __str__(self):
+        return str(self.__dict__)
+
+    def printme(self):
+        pprint(self.__dict__)
+
+    def parse_netfilter_log(self, log_line):
+        log = log_line.strip().split(" ")
+        try:
+            if log[4].split("=")[0] != 'CHAIN':
+                # not a supported log type
+                raise
+        except:
+            raise
+
+        # #########
+        # Timestamp
+        # #########
+        month = log[0]
+        day = log[1]
+        time = log[2]
+        self.timestamp = month + day + time
+
+        self.loghost = log[3]
+
+        # parse out the key=value pieces of the line
+        kv_re = re.compile('([^ ]+)=([^ ]+)')
+        self.data = dict(kv_re.findall(log_line.strip()))
+
+        self.chain = self.data['CHAIN']
+        if self.chain == 'INPUT':
+            # this is an input chain log
+            self.flow_direction = "inbound"
+            self.net_interface = self.data['IN']
+            self.mac_address = self.data['MAC']
+        elif self.chain == 'OUTPUT':
+            # this is an output chain log
+            self.flow_direction = "outbound"
+            self.net_interface = self.data['OUT']
+            self.mac_address = ''  # this isn't captured on OUTPUT
+
+        self.disposition = self.data['ACTION']  # decide on naming here
+        self.src_ip = self.data['SRC']
+        self.src_port = self.data['SPT']
+        self.dst_ip = self.data['DST']
+        self.dst_port = self.data['DPT']
+
+        self.proto = self.data['PROTO'].lower()
+
+        return
+
+
+def compose_iptables_rule(flow_direction, ip, port, proto, disposition, log):
+
+    if flow_direction.lower() == "inbound":
+        chain = "INPUT"
+    elif flow_direction.lower() == "outbound":
+        chain = "OUTPUT"
+    else:
+        return None  # should return exception
+
+    disposition = disposition.upper()
+    if not (disposition is "ACCEPT" or "REJECT" or "DROP"):
+        return None  # should return exception
+
+    rule = ''
+    rule += "-A " + chain
+    rule += " -p " + proto
+
+    if port is not None:
+        rule += " --dport " + port
+
+    rule += " -s " + ip
+    rule += " -j " + disposition
+
+    return rule
+
+
+def convert_logs_to_rules(log_list, flow_direction, disposition):
+    rules = []
+    for log in log_list:
+        rule = compose_iptables_rule(
+            flow_direction=flow_direction,
+            ip=log[0],
+            port=log[1],
+            proto=log[2],
+            disposition=disposition,
+            log=False,
+        )
+        rules.append(rule)
+    return rules
+
+
+# helper function for print_report
+def compose_report_line(log_line, dns):
+    count = log_line[1]
+    ip = log_line[0][0]
+    port = log_line[0][1]
+    proto = log_line[0][2]
+    net_interface = log_line[0][3]
+
+    # try reverse DNS lookup
+    hostname = None
+    if dns:
+        try:
+            hostname = socket.gethostbyaddr(ip)[0]
+        except:
+            hostname = None
+
+    # try looking up the service by port num
+    try:
+        service = socket.getservbyport(int(port), proto)
+    except:
+        service = None
+
+    row = [str(count), str(ip), str(hostname), str(proto), str(port), str(service)]
+    #return line
+    return row
+
+
+# prints a traffic report for the host
+def print_report(inbound_log_list, outbound_log_list, dns):
+    print "##############"
+    print "Traffic Report"
+    print "##############"
+    print "Inbound Connections:"
+    table = prettytable.PrettyTable()
+    table.field_names = ['Count', 'IP', 'Hostname', 'Proto', 'Port', 'Service']
+    for log in inbound_log_list.most_common():
+        table.add_row(compose_report_line(log, dns))
+    print table
+
+    print "Outbound Connections:"
+    table = prettytable.PrettyTable()
+    table.field_names = ['Count', 'IP', 'Hostname', 'Proto', 'Port', 'Service']
+    for log in outbound_log_list.most_common():
+        table.add_row(compose_report_line(log, dns))
+    print table
+
+
+def processIptablesLogFile(logfile, dns):
+    """Ingests a TrafficCop-ready iptables log file and generates report & rules"""
+
+    with logfile as nflog:
+
+        # counters
+        inbound_logs = []
+        outbound_logs = []
+
+        for line in nflog:
+
+            try:
+                nflog = NetfilterLog(line)
+            except:
+                # go to next line
+                #print "unable to parse, received exception"
+                continue
+
+            # pull out fields we want to count
+            if nflog.flow_direction == "inbound":
+                # we use tuples here instead of dicts, since tuples can be hashed
+                inbound_log = (
+                    nflog.src_ip,
+                    nflog.dst_port,
+                    nflog.proto,
+                    nflog.net_interface
+
+                )
+                inbound_logs.append(inbound_log)
+
+            elif nflog.flow_direction == "outbound":
+                outbound_log = (
+                    nflog.dst_ip,
+                    nflog.dst_port,
+                    nflog.proto,
+                    nflog.net_interface
+                )
+                outbound_logs.append(outbound_log)
+
+        # would be better for mem mgmt to add each item each time instead of waiting until we read them all...
+        # remove dupliates
+        inbound_logs = Counter(inbound_logs)
+        outbound_logs = Counter(outbound_logs)
+
+        print_report(inbound_logs, outbound_logs, dns)
+        print ""
+
+        # turn inbound logs into iptables rules
+        inbound_rules = convert_logs_to_rules(
+            log_list=inbound_logs,
+            flow_direction="inbound",
+            disposition="accept",
+        )
+        # turn inbound logs into iptables rules
+        outbound_rules = convert_logs_to_rules(
+            log_list=outbound_logs,
+            flow_direction="outbound",
+            disposition="accept",
+        )
+
+        print "########################"
+        print "Generated Iptables Rules"
+        print "########################"
+        print "Inbound Rules:"
+        for rule in sorted(inbound_rules):
+            print rule
+
+        print ""
+        print "Outbound Rules:"
+        for rule in sorted(outbound_rules):
+            print rule
+        print ""
+
+
+def clearAllRules(force):
+    """clears all firewall rules"""
+    if not force:
+        clickConfirm = click.confirm('About to clear running itpables rules! Continue?', abort=True)
+    if force or clickConfirm:
+        responseCode = Iptables.clearAllRules()
+        if responseCode != 0:
+            print 'Error clearing iptables rules'
+            sys.exit(1)
+
+
+def enableLogging(force, backup):
+    """enable iptables logging to ingest into TrafficCop later"""
+
+    currentRuleset = Iptables.getCurrentRuleset()
+    if not currentRuleset:
+        print "Empty ruleset! Setting up default logging...\n"
+        responseCode = Iptables.clearAllRules()
+        if responseCode != 0:
+            print 'Error clearing iptables rules'
+            sys.exit(1)
+        currentRuleset = Iptables.getCurrentRuleset()
+
+    newRuleset = Iptables.modifyRuleset(currentRuleset)
+
+    if not force:
+        if click.confirm('Press y to see the modified iptables rules about to be loaded', abort=False):
+            print newRuleset + '\n'
+
+    if not force:
+        clickConfirm = click.confirm('About to modify running itpables rules! Continue?', abort=True)
+    if force or clickConfirm:
+
+        if backup:
+            # backup current ruleset
+            filename = 'iptables-backup-' + str(int(time.time()))
+            with open(filename, 'w') as fh:
+                fh.write(currentRuleset)
+            print "Current iptables ruleset backed-up to " + filename
+
+        responseCode = Iptables.loadNewRuleset(newRuleset)
+        if responseCode != 0:
+            print 'Error setting iptables rules'
+            sys.exit(1)
+        else:
+            print 'Iptables rules set!'
+
+
+@click.group()
+def cli():
+    """TrafficCop - iptables firewall rule generator"""
+
+
+@cli.command()
+@click.option('--force',
+              required=False,
+              is_flag=True,
+              flag_value=True,
+              default=False,
+              help='suppress confirmations')
+@click.option('--backup/--nobackup',
+              required=False,
+              default=True,
+              help='backup current iptables ruleset')
+def enable(force, backup):
+    """enable iptables logging"""
+    enableLogging(force, backup)
+
+
+@cli.command()
+@click.option('--force',
+              required=False,
+              is_flag=True,
+              flag_value=True,
+              default=False,
+              help='suppress confirmations')
+def clear(force):
+    """clears all firewall rules"""
+    clearAllRules(force)
+
+
+@cli.command()
+@click.option('--logfile',
+              required=True,
+              default='/var/log/ulog/syslogemu.log',
+              type=click.File('r'),
+              help='path to iptables log file')
+@click.option('--dns/--nodns',
+              required=False,
+              default=False,
+              help='enable/disable DNS lookup on IPs')
+def report(logfile, dns):
+    """generate traffic report & iptables rules"""
+    processIptablesLogFile(logfile, dns)
+
+
+if __name__ == "__main__":
+    cli()
