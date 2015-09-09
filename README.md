@@ -1,7 +1,7 @@
 TrafficCop
 ====
 
-TrafficCop is an iptables rule generator. It helps you:
+[TrafficCop](https://engineering.opendns.com/2015/08/31/generating-iptables-rules-with-trafficcop/) is an iptables rule generator. It helps you:
 
 1. Enable iptables logging via [ulogd](http://www.netfilter.org/projects/ulogd/)
 2. Parse those logs to generate both a "traffic report" and a list of iptables rules
