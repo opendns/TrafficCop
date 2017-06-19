@@ -105,15 +105,19 @@ class Iptables:
 
                 # add rules to those log chains
                 newRules.append('-A LOG_ACCEPT_INPUT -p tcp -m tcp --tcp-flags SYN,RST,ACK SYN -j NFLOG --nflog-prefix "CHAIN=INPUT ACTION=ACCEPT"')
+                newRules.append('-A LOG_ACCEPT_INPUT -p udp -m udp -m state --state NEW -j NFLOG --nflog-prefix "CHAIN=INPUT ACTION=ACCEPT"')
                 newRules.append('-A LOG_ACCEPT_INPUT -j ACCEPT')
 
                 newRules.append('-A LOG_ACCEPT_OUTPUT -p tcp -m tcp --tcp-flags SYN,RST,ACK SYN -j NFLOG --nflog-prefix "CHAIN=OUTPUT ACTION=ACCEPT"')
+                newRules.append('-A LOG_ACCEPT_OUTPUT -p udp -m udp -m state --state NEW -j NFLOG --nflog-prefix "CHAIN=OUTPUT ACTION=ACCEPT"')
                 newRules.append('-A LOG_ACCEPT_OUTPUT -j ACCEPT')
 
                 newRules.append('-A LOG_DROP_OUTPUT -p tcp -m tcp --tcp-flags SYN,RST,ACK SYN -j NFLOG --nflog-prefix "CHAIN=OUTPUT ACTION=DENY"')
+                newRules.append('-A LOG_DROP_OUTPUT -p udp -m udp -m state --state NEW -j NFLOG --nflog-prefix "CHAIN=OUTPUT ACTION=DENY"')
                 newRules.append('-A LOG_DROP_OUTPUT -j DROP')
 
                 newRules.append('-A LOG_DROP_INPUT -p tcp -m tcp --tcp-flags SYN,RST,ACK SYN -j NFLOG --nflog-prefix "CHAIN=INPUT ACTION=DROP"')
+                newRules.append('-A LOG_DROP_INPUT -p udp -m udp -m state --state NEW -j NFLOG --nflog-prefix "CHAIN=INPUT ACTION=DROP"')
                 newRules.append('-A LOG_DROP_INPUT -j DROP')
 
             # remove existing rule lines (we'll add them back later)
