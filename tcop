@@ -180,7 +180,7 @@ def processIptablesLogFile(logfile, dns):
                 nflog = NetfilterLog(line)
             except:
                 # go to next line
-                #print "unable to parse, received exception"
+                print "unable to parse, received exception"
                 continue
 
             # pull out fields we want to count
@@ -218,7 +218,7 @@ def processIptablesLogFile(logfile, dns):
             flow_direction="inbound",
             disposition="accept",
         )
-        # turn inbound logs into iptables rules
+        # turn outbound logs into iptables rules
         outbound_rules = convert_logs_to_rules(
             log_list=outbound_logs,
             flow_direction="outbound",
